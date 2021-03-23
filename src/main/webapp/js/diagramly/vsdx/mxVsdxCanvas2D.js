@@ -238,14 +238,14 @@ mxVsdxCanvas2D.prototype.rect = function(x, y, w, h)
 	h = h * s.scale;
 
 	var geo = this.xmGeo;
-	x = ((x - geo.x + s.dx) * s.scale) /w;
-	y = ((geo.height - y + geo.y - s.dy) * s.scale) /h;
-
-	this.geoSec.appendChild(this.createRowRel("RelMoveTo", this.geoStepIndex++, x, y));
-	this.geoSec.appendChild(this.createRowRel("RelLineTo", this.geoStepIndex++, x + 1, y));
-	this.geoSec.appendChild(this.createRowRel("RelLineTo", this.geoStepIndex++, x + 1, y - 1));
-	this.geoSec.appendChild(this.createRowRel("RelLineTo", this.geoStepIndex++, x, y - 1));
-	this.geoSec.appendChild(this.createRowRel("RelLineTo", this.geoStepIndex++, x, y));	
+	x = ((x - geo.x + s.dx) * s.scale);
+	y = ((geo.height - y + geo.y - s.dy) * s.scale);
+	
+	this.geoSec.appendChild(this.createRowScaled("MoveTo", this.geoStepIndex++, x, y));
+	this.geoSec.appendChild(this.createRowScaled("LineTo", this.geoStepIndex++, x + w, y));
+	this.geoSec.appendChild(this.createRowScaled("LineTo", this.geoStepIndex++, x + w, y - h));
+	this.geoSec.appendChild(this.createRowScaled("LineTo", this.geoStepIndex++, x, y - h));
+	this.geoSec.appendChild(this.createRowScaled("LineTo", this.geoStepIndex++, x, y));
 };
 
 /**
@@ -699,8 +699,7 @@ mxVsdxCanvas2D.prototype.image = function(x, y, w, h, src, aspect, flipH, flipV)
  * Function: text
  * 
  * Paints the given text. Possible values for format are empty string for
- * plain text and html for HTML markup. Background and border color as well
- * as clipping is not available in plain text labels for VML. HTML labels
+ * plain text and html for HTML markup. HTML labels
  * are not available as part of shapes with no foreignObject support in SVG
  * (eg. IE9, IE10).
  * 
@@ -734,8 +733,8 @@ mxVsdxCanvas2D.prototype.text = function(x, y, w, h, str, align, valign, wrap, f
 		if (w == 0 && h == 0)
 		{
 			var strSize = mxUtils.getSizeForString(str, that.cellState.style["fontSize"], that.cellState.style["fontFamily"]);
-			w = strSize.width * 1.2;
-			h = strSize.height * 1.2;
+			w = strSize.width * 2;
+			h = strSize.height * 2;
 		}
 		
 		//TODO support HTML text formatting and remaining attributes
@@ -752,7 +751,7 @@ mxVsdxCanvas2D.prototype.text = function(x, y, w, h, str, align, valign, wrap, f
 			if (this.html2txtDiv == null)
 				this.html2txtDiv = document.createElement('div');
 			
-			this.html2txtDiv.innerHTML = str;
+			this.html2txtDiv.innerHTML = Graph.sanitizeHtml(str);
 			str = mxUtils.extractTextWithWhitespace(this.html2txtDiv.childNodes);
     	}
 		

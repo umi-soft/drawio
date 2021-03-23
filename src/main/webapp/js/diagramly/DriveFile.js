@@ -13,12 +13,6 @@ DriveFile = function(ui, data, desc)
 mxUtils.extend(DriveFile, DrawioFile);
 
 /**
- * Workaround for changing etag after save is higher autosave delay to allow
- * for preflight etag update and decrease possible conflicts on file save.
- */
-DriveFile.prototype.autosaveDelay = 2500;
-
-/**
  * Delay for last save in ms.
  */
 DriveFile.prototype.saveDelay = 0;
@@ -78,7 +72,7 @@ DriveFile.prototype.getMode = function()
 DriveFile.prototype.getPublicUrl = function(fn)
 {
 	this.ui.drive.executeRequest({
-		url: '/files/' + this.desc.id + '/permissions?supportsTeamDrives=true'
+		url: '/files/' + this.desc.id + '/permissions?supportsAllDrives=true'
 	}, 
 	mxUtils.bind(this, function(resp)
 	{
@@ -140,6 +134,17 @@ DriveFile.prototype.isMovable = function()
  * @param {number} dx X-coordinate of the translation.
  * @param {number} dy Y-coordinate of the translation.
  */
+DriveFile.prototype.isTrashed = function()
+{
+	return this.desc.labels.trashed;
+};
+
+/**
+ * Translates this point by the given vector.
+ * 
+ * @param {number} dx X-coordinate of the translation.
+ * @param {number} dy Y-coordinate of the translation.
+ */
 DriveFile.prototype.save = function(revision, success, error, unloading, overwrite)
 {
 	DrawioFile.prototype.save.apply(this, [revision, mxUtils.bind(this, function()
@@ -167,169 +172,155 @@ DriveFile.prototype.saveFile = function(title, revision, success, error, unloadi
 		}
 		else if (!this.savingFile)
 		{
-			var doSave = mxUtils.bind(this, function(realOverwrite, realRevision)
+			// Sets shadow modified state during save
+			this.savingFileTime = new Date();
+			this.setShadowModified(false);
+			this.savingFile = true;
+
+			this.createSecret(mxUtils.bind(this, function(secret, token)
 			{
-				var prevModified = null;
-				var modified = null;
-				
-				try
+				var doSave = mxUtils.bind(this, function(realOverwrite, realRevision)
 				{
-					// Makes sure no changes get lost while the file is saved
-					prevModified = this.isModified;
-					modified = this.isModified();
-					this.setModified(false);
-					this.savingFileTime = new Date();
-					this.savingFile = true;
-					
-					// Waits for success for modified state to be visible
-					this.isModified = function()
+					try
 					{
-						return true;
-					};
-
-					var lastDesc = this.desc;
-
-					this.ui.drive.saveFile(this, realRevision, mxUtils.bind(this, function(resp, savedData)
-					{
-						try
+						var lastDesc = this.desc;
+	
+						this.ui.drive.saveFile(this, realRevision, mxUtils.bind(this, function(resp, savedData)
 						{
-							this.savingFile = false;
-							this.isModified = prevModified;
-							
-							// Handles special case where resp is false eg
-							// if the old file was converted to realtime
-							if (resp != false)
+							try
 							{
-								if (revision)
-								{
-									this.lastAutosaveRevision = new Date().getTime();
-								}
-			
-								// Adaptive autosave delay
-								this.autosaveDelay = Math.min(8000,
-									Math.max(this.saveDelay + 500,
-									DriveFile.prototype.autosaveDelay));
-								this.desc = resp;
+								this.savingFile = false;
 								
-								this.fileSaved(savedData, lastDesc, mxUtils.bind(this, function()
+								// Handles special case where resp is false eg
+								// if the old file was converted to realtime
+								if (resp != false)
 								{
-									this.contentChanged();
+									// Checks for changes during save
+									this.setModified(this.getShadowModified());
 									
-									if (success != null)
+									if (revision)
+									{
+										this.lastAutosaveRevision = new Date().getTime();
+									}
+				
+									// Adaptive autosave delay
+									this.autosaveDelay = Math.round(Math.min(10000,
+										Math.max(DriveFile.prototype.autosaveDelay,
+											this.saveDelay)));
+									this.desc = resp;
+									
+									// Shows possible errors but keeps the modified flag as the
+									// file was saved but the cache entry could not be written
+									if (token != null)
+									{
+										this.fileSaved(savedData, lastDesc, mxUtils.bind(this, function()
+										{
+											this.contentChanged();
+											
+											if (success != null)
+											{
+												success(resp);
+											}
+										}), error, token);
+									}
+									else if (success != null)
 									{
 										success(resp);
 									}
-								}), error);
-							}
-							else
-							{
-								this.setModified(modified || this.isModified());
-								
-								if (error != null)
+								}
+								else if (error != null)
 								{
 									error(resp);
 								}
 							}
-						}
-						catch (e)
-						{
-							this.setModified(modified || this.isModified());
-							
-							if (error != null)
+							catch (e)
 							{
-								error(e);
-							}
-							else
-							{
-								throw e;
-							}
-						}
-					}), mxUtils.bind(this, function(err, desc)
-					{
-						try
-						{
-							this.savingFile = false;
-							this.isModified = prevModified;
-							this.setModified(modified || this.isModified());
-						
-							if (this.isConflict(err))
-							{
-								this.inConflictState = true;
+								this.savingFile = false;
 								
-								if (this.sync != null)
+								if (error != null)
 								{
-									this.savingFile = true;
-									this.savingFileTime = new Date();
+									error(e);
+								}
+								else
+								{
+									throw e;
+								}
+							}
+						}), mxUtils.bind(this, function(err, desc)
+						{
+							try
+							{
+								this.savingFile = false;
+								
+								if (this.isConflict(err))
+								{
+									this.inConflictState = true;
 									
-									this.sync.fileConflict(desc, mxUtils.bind(this, function()
+									if (this.sync != null)
 									{
-										// Adds random cool-off
-										window.setTimeout(mxUtils.bind(this, function()
-										{
-											this.updateFileData();
-											doSave(realOverwrite, true);
-										}), 100 + Math.random() * 500);
-									}), mxUtils.bind(this, function()
-									{
-										this.savingFile = false;
+										this.savingFile = true;
 										
-										if (error != null)
+										this.sync.fileConflict(desc, mxUtils.bind(this, function()
 										{
-											error();
-										}
-									}));
+											// Adds random cool-off
+											window.setTimeout(mxUtils.bind(this, function()
+											{
+												this.updateFileData();
+												this.setShadowModified(false);
+												doSave(realOverwrite, true);
+											}), 100 + Math.random() * 500);
+										}), mxUtils.bind(this, function()
+										{
+											this.savingFile = false;
+							
+											if (error != null)
+											{
+												error();
+											}
+										}));
+									}
+									else if (error != null)
+									{
+										error();
+									}
 								}
 								else if (error != null)
 								{
-									error();
+									error(err);
 								}
 							}
-							else if (error != null)
+							catch (e)
 							{
-								error(err);
+								this.savingFile = false;
+					
+								if (error != null)
+								{
+									error(e);
+								}
+								else
+								{
+									throw e;
+								}
 							}
-						}
-						catch (e)
+						}), unloading, unloading, realOverwrite, null, secret);
+					}
+					catch (e)
+					{
+						this.savingFile = false;
+						
+						if (error != null)
 						{
-							this.setModified(modified || this.isModified());
-							
-							if (error != null)
-							{
-								error(e);
-							}
-							else
-							{
-								throw e;
-							}
+							error(e);
 						}
-					}), unloading, unloading, realOverwrite);
-				}
-				catch (e)
-				{
-					this.savingFile = false;
-					
-					if (prevModified != null)
-					{
-						this.isModified = prevModified;
+						else
+						{
+							throw e;
+						}
 					}
-					
-					if (modified != null)
-					{
-						this.setModified(modified || this.isModified());
-					}
-					
-					if (error != null)
-					{
-						error(e);
-					}
-					else
-					{
-						throw e;
-					}
-				}
-			});
-			
-			doSave(overwrite, revision);
+				});
+				
+				doSave(overwrite, revision);				
+			}));
 		}
 	}
 	catch (e)
@@ -477,6 +468,17 @@ DriveFile.prototype.move = function(folderId, success, error)
 			success(resp);
 		}
 	}), error);
+};
+
+/**
+ * Translates this point by the given vector.
+ * 
+ * @param {number} dx X-coordinate of the translation.
+ * @param {number} dy Y-coordinate of the translation.
+ */
+DriveFile.prototype.share = function()
+{
+	this.ui.drive.showPermissions(this.getId());
 };
 
 /**
@@ -682,7 +684,7 @@ DriveFile.prototype.loadPatchDescriptor = function(success, error)
 {
 	this.ui.drive.executeRequest(
 	{	
-		url: '/files/' + this.getId() + '?supportsTeamDrives=true&fields=' + this.ui.drive.catchupFields
+		url: '/files/' + this.getId() + '?supportsAllDrives=true&fields=' + this.ui.drive.catchupFields
 	},
 	mxUtils.bind(this, function(desc)
 	{

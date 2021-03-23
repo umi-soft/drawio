@@ -330,10 +330,13 @@ EditorUi.prototype.initPages = function()
 		{
 			this.selectNextPage(true);
 		}));
-		
-		this.keyHandler.bindAction(33, true, 'previousPage', true); // Ctrl+Shift+PageUp
-		this.keyHandler.bindAction(34, true, 'nextPage', true); // Ctrl+Shift+PageDown
-		
+
+		if (this.isPagesEnabled())
+		{
+			this.keyHandler.bindAction(33, true, 'previousPage', true); // Ctrl+Shift+PageUp
+			this.keyHandler.bindAction(34, true, 'nextPage', true); // Ctrl+Shift+PageDown
+		}
+			
 		// Updates the tabs after loading the diagram
 		var graph = this.editor.graph;
 		var graphViewValidateBackground = graph.view.validateBackground; 
@@ -497,6 +500,23 @@ Graph.prototype.createViewState = function(node)
 	var bg = node.getAttribute('background');
 	var temp = node.getAttribute('backgroundImage');
 	var bgImg = (temp != null && temp.length > 0) ? JSON.parse(temp) : null;
+	var extFonts = node.getAttribute('extFonts');
+	
+	if (extFonts)
+	{
+		try
+		{
+			extFonts = extFonts.split('|').map(function(ef)
+			{
+				var parts = ef.split('^');
+				return {name: parts[0], url: parts[1]};
+			});
+		}
+		catch(e)
+		{
+			console.log('ExtFonts format error: ' + e.message);
+		}
+	}
 	
 	return {
 		gridEnabled: node.getAttribute('grid') != '0',
@@ -509,7 +529,7 @@ Graph.prototype.createViewState = function(node)
 		background: (bg != null && bg.length > 0) ? bg : null,
 		backgroundImage: (bgImg != null) ? new mxImage(bgImg.src, bgImg.width, bgImg.height) : null,
 		pageScale: (!isNaN(ps)) ? ps : mxGraph.prototype.pageScale,
-		pageFormat: (!isNaN(pw) && !isNaN(ph)) ? new mxRectangle(0, 0, pw, ph) : mxSettings.getPageFormat(),
+		pageFormat: (!isNaN(pw) && !isNaN(ph)) ? new mxRectangle(0, 0, pw, ph) : (typeof mxSettings === 'undefined'? mxGraph.prototype.pageFormat : mxSettings.getPageFormat()),
 		tooltips: node.getAttribute('tooltips') != '0',
 		connect: node.getAttribute('connect') != '0',
 		arrows: node.getAttribute('arrows') != '0',
@@ -517,7 +537,8 @@ Graph.prototype.createViewState = function(node)
 		selectionCells: null,
 		defaultParent: null,
 		scrollbars: this.defaultScrollbars,
-		scale: 1
+		scale: 1,
+		extFonts: extFonts || []
 	};
 };
 
@@ -543,7 +564,7 @@ Graph.prototype.saveViewState = function(vs, node, ignoreTransient)
 
 	node.setAttribute('pageScale', (vs != null && vs.pageScale != null) ? vs.pageScale : mxGraph.prototype.pageScale);
 	
-	var pf = (vs != null) ? vs.pageFormat : mxSettings.getPageFormat();
+	var pf = (vs != null) ? vs.pageFormat : (typeof mxSettings === 'undefined'? mxGraph.prototype.pageFormat : mxSettings.getPageFormat());
 	
 	if (pf != null)
 	{
@@ -563,6 +584,14 @@ Graph.prototype.saveViewState = function(vs, node, ignoreTransient)
 
 	node.setAttribute('math', (vs != null && vs.mathEnabled) ? '1' : '0');
 	node.setAttribute('shadow', (vs != null && vs.shadowVisible) ? '1' : '0');
+	
+	if (vs != null && vs.extFonts != null && vs.extFonts.length > 0)
+	{
+		node.setAttribute('extFonts', vs.extFonts.map(function(ef)
+		{
+			return ef.name + '^' + ef.url;
+		}).join('|'));
+	}
 };
 
 /**
@@ -594,14 +623,15 @@ Graph.prototype.getViewState = function()
 		translate: this.view.translate.clone(),
 		lastPasteXml: this.lastPasteXml,
 		pasteCounter: this.pasteCounter,
-		mathEnabled: this.mathEnabled
+		mathEnabled: this.mathEnabled,
+		extFonts: this.extFonts
 	};
 };
 
 /**
  * Overrides setDefaultParent
  */
-Graph.prototype.setViewState = function(state)
+Graph.prototype.setViewState = function(state, removeOldExtFonts)
 {
 	if (state != null)
 	{
@@ -625,7 +655,30 @@ Graph.prototype.setViewState = function(state)
 		this.connectionArrowsEnabled = state.arrows;
 		this.setTooltips(state.tooltips);
 		this.setConnectable(state.connect);
+		
+		var oldExtFonts = this.extFonts;
+		this.extFonts = state.extFonts || [];
 
+		// Removing old fonts is important for real-time synchronization
+		// But, for page change, it results in undesirable font flicker
+		if (removeOldExtFonts && oldExtFonts != null)
+		{
+			for (var i = 0; i < oldExtFonts.length; i++)
+			{
+				var fontElem = document.getElementById('extFont_' + oldExtFonts[i].name);
+				
+				if (fontElem != null)
+				{
+					fontElem.parentNode.removeChild(fontElem);
+				}
+			}
+		}
+		
+		for (var i = 0; i < this.extFonts.length; i++)
+		{
+			this.addExtFont(this.extFonts[i].name, this.extFonts[i].url, true);
+		}
+		
 		if (state.scale != null)
 		{
 			this.view.scale = state.scale;
@@ -661,7 +714,7 @@ Graph.prototype.setViewState = function(state)
 		this.gridEnabled = true;
 		this.gridSize = mxGraph.prototype.gridSize;
 		this.pageScale = mxGraph.prototype.pageScale;
-		this.pageFormat = mxSettings.getPageFormat();
+		this.pageFormat = (typeof mxSettings === 'undefined'? mxGraph.prototype.pageFormat : mxSettings.getPageFormat());
 		this.pageVisible = this.defaultPageVisible;
 		this.background = null;
 		this.backgroundImage = null;
@@ -676,6 +729,7 @@ Graph.prototype.setViewState = function(state)
 		this.pasteCounter = 0;
 		this.mathEnabled = false;
 		this.connectionArrowsEnabled = true;
+		this.extFonts = [];
 	}
 	
 	// Implicit settings
@@ -684,14 +738,76 @@ Graph.prototype.setViewState = function(state)
 	this.fireEvent(new mxEventObject('viewStateChanged', 'state', state));
 };
 
+Graph.prototype.addExtFont = function(fontName, fontUrl, dontRemember)
+{
+	// KNOWN: Font not added when pasting cells with custom fonts
+	if (fontName && fontUrl)
+	{
+		if (urlParams['ext-fonts'] != '1')
+		{
+			// Adds inserted fonts to font family menu
+			Graph.recentCustomFonts[fontName.toLowerCase()] = {name: fontName, url: fontUrl};
+		}
+		
+		var fontId = 'extFont_' + fontName;
+
+		if (document.getElementById(fontId) == null)
+		{
+			if (fontUrl.indexOf(Editor.GOOGLE_FONTS) == 0)
+			{
+				mxClient.link('stylesheet', fontUrl, null, fontId);
+			}
+			else
+			{
+				var head = document.getElementsByTagName('head')[0];
+				
+				// KNOWN: Should load fonts synchronously
+				var style = document.createElement('style');
+				
+				style.appendChild(document.createTextNode('@font-face {\n' +
+					'\tfont-family: "'+ fontName +'";\n' + 
+					'\tsrc: url("'+ fontUrl +'");\n}'));
+				
+				style.setAttribute('id', fontId);
+				var head = document.getElementsByTagName('head')[0];
+		   		head.appendChild(style);
+			}
+		}
+		
+		if (!dontRemember)
+		{
+			if (this.extFonts == null) 
+			{
+				this.extFonts = [];
+			}
+			
+			var extFonts = this.extFonts, notFound = true;
+			
+			for (var i = 0; i < extFonts.length; i++)
+			{
+				if (extFonts[i].name == fontName)
+				{
+					notFound = false;
+					break;
+				}
+			}
+			
+			if (notFound)
+			{
+				this.extFonts.push({name: fontName, url: fontUrl});
+			}
+		}
+	}
+};
+
 /**
  * Executes selection of a new page.
  */
-EditorUi.prototype.updatePageRoot = function(page)
+EditorUi.prototype.updatePageRoot = function(page, checked)
 {
 	if (page.root == null)
 	{
-		var node = this.editor.extractGraphModel(page.node);
+		var node = this.editor.extractGraphModel(page.node, null, checked);
 		var cause = Editor.extractParserError(node);
 		
 		if (cause)
@@ -1046,7 +1162,7 @@ EditorUi.prototype.updateTabContainer = function()
 		var graph = this.editor.graph;
 		var wrapper = document.createElement('div');
 		wrapper.style.position = 'relative';
-		wrapper.style.display = (mxClient.IS_QUIRKS) ? 'inline' : 'inline-block';
+		wrapper.style.display = 'inline-block';
 		wrapper.style.verticalAlign = 'top';
 		wrapper.style.height = this.tabContainer.style.height;
 		wrapper.style.whiteSpace = 'nowrap';
@@ -1101,9 +1217,7 @@ EditorUi.prototype.updateTabContainer = function()
 				
 				mxEvent.addListener(tab, 'dragend', mxUtils.bind(this, function(evt)
 				{
-					// Workaround for end before drop in Chrome on Win10 is to
-					// reset startIndex in drop event handler instead
-					// startIndex = null;
+					startIndex = null;
 					evt.stopPropagation();
 					evt.preventDefault();
 				}));
@@ -1123,11 +1237,10 @@ EditorUi.prototype.updateTabContainer = function()
 				{
 					if (startIndex != null && index != startIndex)
 					{
-						// TODO: Shift drag for insert/merge?
+						// LATER: Shift+drag for merge, ctrl+drag for clone 
 						this.movePage(startIndex, index);
 					}
 
-					startIndex = null;
 					evt.stopPropagation();
 					evt.preventDefault();
 				}));
@@ -1217,7 +1330,7 @@ EditorUi.prototype.isPageInsertTabVisible = function()
 EditorUi.prototype.createTab = function(hoverEnabled)
 {
 	var tab = document.createElement('div');
-	tab.style.display = (mxClient.IS_QUIRKS) ? 'inline' : 'inline-block';
+	tab.style.display = 'inline-block';
 	tab.style.whiteSpace = 'nowrap';
 	tab.style.boxSizing = 'border-box';
 	tab.style.position = 'relative';
@@ -1332,7 +1445,7 @@ EditorUi.prototype.createPageMenuTab = function()
 					{
 						this.renamePage(page, page.getName());
 					}), parent);
-					
+
 					menu.addSeparator(parent);
 					
 					menu.addItem(mxResources.get('duplicate'), null, mxUtils.bind(this, function()
@@ -1477,6 +1590,38 @@ EditorUi.prototype.addTabListeners = function(page, tab)
 };
 
 /**
+ * Returns an absolute URL to the given page or null of absolute links
+ * to pages are not supported in this file.
+ */
+EditorUi.prototype.getLinkForPage = function(page, params, lightbox)
+{
+	if (!mxClient.IS_CHROMEAPP && !EditorUi.isElectronApp)
+	{
+		var file = this.getCurrentFile();
+		
+		if (file != null && file.constructor != LocalFile && this.getServiceName() == 'draw.io')
+		{
+			var search = this.getSearch(['create', 'title', 'mode', 'url', 'drive', 'splash',
+				'state', 'clibs', 'ui', 'viewbox', 'hide-pages']);
+			search += ((search.length == 0) ? '?' : '&') + 'page-id=' + page.getId();
+			
+			if (params != null)
+			{
+				search += '&' + params.join('&');
+			}
+			
+			return ((lightbox && urlParams['dev'] != '1') ? EditorUi.lightboxHost :
+				(((mxClient.IS_CHROMEAPP || EditorUi.isElectronApp ||
+				!(/.*\.draw\.io$/.test(window.location.hostname))) ?
+				EditorUi.drawHost : 'https://' + window.location.host))) +
+				'/' + search + '#' + file.getHash();
+		}
+	}
+	
+	return null;
+};
+
+/**
  * Returns true if the given string contains an mxfile.
  */
 EditorUi.prototype.createPageMenu = function(page, label)
@@ -1501,12 +1646,62 @@ EditorUi.prototype.createPageMenu = function(page, label)
 			this.renamePage(page, label);
 		}), parent);
 		
+		var url = this.getLinkForPage(page);
+
+		if (url != null)
+		{
+			menu.addSeparator(parent);
+			
+			menu.addItem(mxResources.get('link'), null, mxUtils.bind(this, function()
+			{
+				this.showPublishLinkDialog(mxResources.get('url'), true, null, null,
+					mxUtils.bind(this, function(linkTarget, linkColor, allPages, lightbox, editLink, layers)
+				{
+					var params = this.createUrlParameters(linkTarget, linkColor, allPages, lightbox, editLink, layers);
+					
+					if (!allPages)
+					{
+						params.push('hide-pages=1');
+					}
+					
+					if (!graph.isSelectionEmpty())
+					{
+						var bounds = graph.getBoundingBox(graph.getSelectionCells());
+								
+						var t = graph.view.translate;
+						var s = graph.view.scale;
+						bounds.width /= s;
+						bounds.height /= s;
+						bounds.x = bounds.x / s - t.x;
+						bounds.y = bounds.y / s - t.y;
+					
+						params.push('viewbox=' + encodeURIComponent(JSON.stringify({x: Math.round(bounds.x), y: Math.round(bounds.y),
+							width: Math.round(bounds.width), height: Math.round(bounds.height), border: 100})));
+					}
+					
+					var dlg = new EmbedDialog(this, this.getLinkForPage(page, params, lightbox));
+					this.showDialog(dlg.container, 440, 240, true, true);
+					dlg.init();
+				}));
+			}));
+		}
+		
 		menu.addSeparator(parent);
 		
 		menu.addItem(mxResources.get('duplicate'), null, mxUtils.bind(this, function()
 		{
 			this.duplicatePage(page, mxResources.get('copyOf', [page.getName()]));
 		}), parent);
+		
+		if (!mxClient.IS_CHROMEAPP && !EditorUi.isElectronApp && this.getServiceName() == 'draw.io')
+		{		
+			menu.addSeparator(parent);
+			
+			menu.addItem(mxResources.get('openInNewWindow'), null, mxUtils.bind(this, function()
+			{
+				this.editor.editAsNew(this.getFileData(true, null, null, null, true, true));
+			}), parent);
+		}
 	});
 };
 
